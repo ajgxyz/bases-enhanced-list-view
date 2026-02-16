@@ -13,5 +13,9 @@ node_modules
 .DS_Store
 Thumbs.db
 
+# Project docs and AI config
+docs/
+CLAUDE.md
+
 # Environment
 .env

@@ -31,8 +31,6 @@ const DEFAULT_SETTINGS = {
 	showSubtitle: false,
 	subtitleProperty: SUBTITLE_PARENT_FOLDER,
 	showMetadata: true,
-	itemSize: "comfortable",
-	collapsibleGroups: true,
 	showGroupCounts: true,
 };
 
@@ -49,7 +47,7 @@ export default class EnhancedListViewPlugin extends Plugin {
 				// Grouping options (use unique key names to avoid conflict with Bases internals)
 				{
 					type: "property",
-					displayName: "Group by",
+					displayName: "First group",
 					key: "primaryGroup",
 					placeholder: "Select property for grouping (optional)",
 					filter: (prop: string) => {
@@ -59,7 +57,7 @@ export default class EnhancedListViewPlugin extends Plugin {
 				} as PropertyOption,
 				{
 					type: "property",
-					displayName: "Sub-group by",
+					displayName: "Second group",
 					key: "subGroup",
 					placeholder: "Select property for sub-grouping (optional)",
 					filter: (prop: string) => {
@@ -69,17 +67,6 @@ export default class EnhancedListViewPlugin extends Plugin {
 				} as PropertyOption,
 				// Layout options
 				{
-					type: "dropdown",
-					displayName: "Item size",
-					key: "itemSize",
-					default: DEFAULT_SETTINGS.itemSize,
-					options: {
-						compact: "Compact",
-						comfortable: "Comfortable",
-						cozy: "Cozy",
-					},
-				} as DropdownOption,
-				{
 					type: "slider",
 					displayName: "Preview lines",
 					key: "previewLines",
@@ -87,6 +74,16 @@ export default class EnhancedListViewPlugin extends Plugin {
 					min: 0,
 					max: 5,
 				} as SliderOption,
+				{
+					type: "property",
+					displayName: "Preview source",
+					key: "previewProperty",
+					placeholder: "Default (description/summary/excerpt)",
+					filter: (prop: string) => {
+						return prop.startsWith("note.") || prop.startsWith("file.") || prop.startsWith("formula.");
+					},
+					shouldHide: (config) => config.get("previewLines") === 0,
+				} as PropertyOption,
 				{
 					type: "toggle",
 					displayName: "Show thumbnails",
@@ -137,12 +134,6 @@ export default class EnhancedListViewPlugin extends Plugin {
 				} as ToggleOption,
 				{
 					type: "toggle",
-					displayName: "Collapsible groups",
-					key: "collapsibleGroups",
-					default: DEFAULT_SETTINGS.collapsibleGroups,
-				} as ToggleOption,
-				{
-					type: "toggle",
 					displayName: "Show group counts",
 					key: "showGroupCounts",
 					default: DEFAULT_SETTINGS.showGroupCounts,
@@ -181,15 +172,14 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 		this.containerEl.empty();
 
 		// Get configuration values with defaults
-		const itemSize = this.getConfigString("itemSize", DEFAULT_SETTINGS.itemSize);
 		const previewLines = this.getConfigNumber("previewLines", DEFAULT_SETTINGS.previewLines);
 		const showThumbnails = this.getConfigBoolean("showThumbnails", DEFAULT_SETTINGS.showThumbnails);
 		const thumbnailSize = this.getConfigString("thumbnailSize", DEFAULT_SETTINGS.thumbnailSize);
 		const showTags = this.getConfigBoolean("showTags", DEFAULT_SETTINGS.showTags);
 		const showSubtitle = this.getConfigBoolean("showSubtitle", DEFAULT_SETTINGS.showSubtitle);
 		const subtitleProperty = this.getConfigPropertyId("subtitleProperty") || DEFAULT_SETTINGS.subtitleProperty;
+		const previewProperty = this.getConfigPropertyId("previewProperty");
 		const showMetadata = this.getConfigBoolean("showMetadata", DEFAULT_SETTINGS.showMetadata);
-		const collapsibleGroups = this.getConfigBoolean("collapsibleGroups", DEFAULT_SETTINGS.collapsibleGroups);
 		const showGroupCounts = this.getConfigBoolean("showGroupCounts", DEFAULT_SETTINGS.showGroupCounts);
 
 		// Get grouping configuration (use unique key names to avoid conflict with Bases internals)
@@ -197,60 +187,93 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 		const subGroupByProperty = this.getConfigPropertyId("subGroup");
 
 		// Set CSS variables for sizing
-		this.containerEl.setAttribute("data-item-size", itemSize);
 		this.containerEl.setAttribute("data-thumbnail-size", thumbnailSize);
 
 		// Get property order from config
 		const order = this.config.getOrder();
 
-		// Collect all entries from Bases data
-		const allEntries: BasesEntry[] = [];
-		for (const group of this.data.groupedData) {
-			allEntries.push(...group.entries);
-		}
-
 		// Render options
 		const renderOptions = {
 			order,
 			previewLines,
+			previewProperty,
 			showThumbnails,
 			showTags,
 			showSubtitle,
 			subtitleProperty,
 			showMetadata,
-			collapsibleGroups,
 			showGroupCounts,
 		};
 
-		// Group entries by plugin-controlled grouping
-		if (groupByProperty) {
-			const groupedEntries = this.groupEntriesByProperty(allEntries, groupByProperty);
+		// Determine if native Bases grouping is active
+		const hasNativeGrouping = this.data.groupedData.some(g => g.hasKey());
+		const levelOffset = hasNativeGrouping ? 1 : 0;
 
-			for (const [groupKey, entries] of groupedEntries) {
-				if (subGroupByProperty) {
-					// Two-level grouping
-					this.renderGroupWithSubGroups(groupKey, entries, subGroupByProperty, renderOptions);
-				} else {
-					// Single-level plugin grouping
-					this.renderCustomGroup(groupKey, entries, renderOptions);
+		let totalEntries = 0;
+
+		// Always iterate native groups first, then apply plugin grouping within each
+		for (const nativeGroup of this.data.groupedData) {
+			totalEntries += nativeGroup.entries.length;
+
+			// Determine parent element and handle native group header/collapse
+			let parentEl: HTMLElement;
+			const nativeKey = nativeGroup.hasKey()
+				? (nativeGroup.key?.toString() ?? "__ungrouped__")
+				: "";
+
+			if (nativeGroup.hasKey()) {
+				// Render native group wrapper
+				const nativeGroupEl = this.containerEl.createDiv("enhanced-list-group");
+				nativeGroupEl.setAttribute("data-level", "primary");
+				const isNativeCollapsed = this.collapsedGroups.has(nativeKey);
+
+				this.renderGroupHeader(
+					nativeGroupEl,
+					this.stripWikilinks(nativeGroup.key?.toString() ?? ""),
+					nativeGroup.entries.length,
+					isNativeCollapsed,
+					renderOptions,
+					"primary"
+				);
+
+				if (isNativeCollapsed) {
+					nativeGroupEl.addClass("is-collapsed");
+					continue;
 				}
-			}
-		} else if (subGroupByProperty) {
-			// Only sub-grouping configured - treat it as primary grouping
-			const groupedEntries = this.groupEntriesByProperty(allEntries, subGroupByProperty);
 
-			for (const [groupKey, entries] of groupedEntries) {
-				this.renderCustomGroup(groupKey, entries, renderOptions);
+				parentEl = nativeGroupEl;
+			} else {
+				parentEl = this.containerEl;
 			}
-		} else {
-			// No plugin grouping - use native Bases grouping
-			for (const group of this.data.groupedData) {
-				this.renderGroup(group, renderOptions);
+
+			// Apply plugin grouping within this native group's entries
+			if (groupByProperty) {
+				const groupedEntries = this.groupEntriesByProperty(nativeGroup.entries, groupByProperty);
+
+				for (const [groupKey, entries] of groupedEntries) {
+					if (subGroupByProperty) {
+						this.renderGroupWithSubGroups(parentEl, nativeKey, groupKey, entries, subGroupByProperty, levelOffset, renderOptions);
+					} else {
+						this.renderCustomGroup(parentEl, nativeKey, groupKey, entries, levelOffset, renderOptions);
+					}
+				}
+			} else if (subGroupByProperty) {
+				const groupedEntries = this.groupEntriesByProperty(nativeGroup.entries, subGroupByProperty);
+
+				for (const [groupKey, entries] of groupedEntries) {
+					this.renderCustomGroup(parentEl, nativeKey, groupKey, entries, levelOffset, renderOptions);
+				}
+			} else {
+				// No plugin grouping — render entries directly
+				const entriesEl = parentEl.createDiv("enhanced-list-entries");
+				for (const entry of nativeGroup.entries) {
+					this.renderEntry(entriesEl, entry, renderOptions);
+				}
 			}
 		}
 
 		// Handle empty state
-		if (allEntries.length === 0) {
+		if (totalEntries === 0) {
 			this.containerEl.createDiv({
 				cls: "enhanced-list-empty",
 				text: "No items to display",
@@ -357,11 +380,11 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 			if (!str || str === "null" || str === "undefined") {
 				return "None";
 			}
-			return str;
+			return this.stripWikilinks(str);
 		}
 
 		if (typeof value === "string") {
-			return value || "None";
+			return this.stripWikilinks(value) || "None";
 		}
 
 		if (typeof value === "number") {
@@ -380,30 +403,96 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 	}
 
 	/**
+	 * Strip wikilink brackets from a string for display purposes.
+	 * Handles both simple [[Link]] and aliased [[Link|Alias]] formats.
+	 */
+	private stripWikilinks(str: string): string {
+		return str.replace(/\[\[([^\]]+?)(?:\|([^\]]+))?\]\]/g, (_match, link, alias) => alias ?? link);
+	}
+
+	/**
+	 * Render text with clickable wikilinks into a container.
+	 * Non-link text becomes text nodes; wikilinks become clickable spans.
+	 */
+	private renderTextWithLinks(container: HTMLElement, text: string): void {
+		const regex = /\[\[([^\]]+?)(?:\|([^\]]+))?\]\]/g;
+		let lastIndex = 0;
+		let match: RegExpExecArray | null;
+
+		while ((match = regex.exec(text)) !== null) {
+			// Append plain text before this match
+			if (match.index > lastIndex) {
+				container.appendText(text.slice(lastIndex, match.index));
+			}
+
+			const linkPath = match[1];
+			const displayText = match[2] ?? match[1];
+
+			const linkSpan = container.createSpan({
+				cls: "enhanced-list-link",
+				text: displayText,
+			});
+
+			linkSpan.addEventListener("click", (evt) => {
+				evt.stopPropagation();
+				evt.preventDefault();
+				this.app.workspace.openLinkText(linkPath, "", Keymap.isModEvent(evt));
+			});
+
+			linkSpan.addEventListener("mouseover", (evt) => {
+				this.app.workspace.trigger("hover-link", {
+					event: evt,
+					source: "bases",
+					hoverParent: this,
+					targetEl: linkSpan,
+					linktext: linkPath,
+				});
+			});
+
+			lastIndex = regex.lastIndex;
+		}
+
+		// Append any remaining plain text
+		if (lastIndex < text.length) {
+			container.appendText(text.slice(lastIndex));
+		}
+	}
+
+	/**
 	 * Render a group with sub-groups
 	 */
 	private renderGroupWithSubGroups(
+		parentEl: HTMLElement,
+		nativeKey: string,
 		groupKey: string,
 		entries: BasesEntry[],
 		subGroupProperty: string,
+		levelOffset: number,
 		options: {
 			order: BasesPropertyId[];
 			previewLines: number;
+			previewProperty: string | null;
 			showThumbnails: boolean;
 			showTags: boolean;
 			showSubtitle: boolean;
 			subtitleProperty: string;
 			showMetadata: boolean;
-			collapsibleGroups: boolean;
 			showGroupCounts: boolean;
 		}
 	): void {
-		const groupEl = this.containerEl.createDiv("enhanced-list-group");
-		groupEl.setAttribute("data-level", "primary");
-		const isCollapsed = this.collapsedGroups.has(groupKey);
+		const levels: Array<"primary" | "secondary" | "tertiary"> = ["primary", "secondary", "tertiary"];
+		const primaryLevel = levels[levelOffset];
+		const subLevel = levels[levelOffset + 1];
+
+		const groupEl = parentEl.createDiv("enhanced-list-group");
+		groupEl.setAttribute("data-level", primaryLevel);
+
+		const collapseKey = nativeKey ? `${nativeKey}::${groupKey}` : groupKey;
+		const primaryCollapsedSet = (primaryLevel === "secondary" || primaryLevel === "tertiary") ? this.collapsedSubGroups : this.collapsedGroups;
+		const isCollapsed = primaryCollapsedSet.has(collapseKey);
 
 		// Render primary group header
-		this.renderGroupHeader(groupEl, groupKey, entries.length, isCollapsed, options, "primary");
+		this.renderGroupHeader(groupEl, groupKey, entries.length, isCollapsed, options, primaryLevel, collapseKey);
 
 		if (isCollapsed) {
 			groupEl.addClass("is-collapsed");
@@ -414,13 +503,15 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 		const subGroups = this.groupEntriesByProperty(entries, subGroupProperty);
 
 		for (const [subGroupKey, subEntries] of subGroups) {
-			const compoundKey = `${groupKey}:${subGroupKey}`;
+			const compoundKey = nativeKey
+				? `${nativeKey}::${groupKey}::${subGroupKey}`
+				: `${groupKey}:${subGroupKey}`;
 			const subGroupEl = groupEl.createDiv("enhanced-list-group");
-			subGroupEl.setAttribute("data-level", "secondary");
+			subGroupEl.setAttribute("data-level", subLevel);
 			const isSubCollapsed = this.collapsedSubGroups.has(compoundKey);
 
 			// Render sub-group header
-			this.renderGroupHeader(subGroupEl, subGroupKey, subEntries.length, isSubCollapsed, options, "secondary", compoundKey);
+			this.renderGroupHeader(subGroupEl, subGroupKey, subEntries.length, isSubCollapsed, options, subLevel, compoundKey);
 
 			if (isSubCollapsed) {
 				subGroupEl.addClass("is-collapsed");
@@ -439,25 +530,35 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 	 * Render a custom group (plugin-controlled)
 	 */
 	private renderCustomGroup(
+		parentEl: HTMLElement,
+		nativeKey: string,
 		groupKey: string,
 		entries: BasesEntry[],
+		levelOffset: number,
 		options: {
 			order: BasesPropertyId[];
 			previewLines: number;
+			previewProperty: string | null;
 			showThumbnails: boolean;
 			showTags: boolean;
 			showSubtitle: boolean;
 			subtitleProperty: string;
 			showMetadata: boolean;
-			collapsibleGroups: boolean;
 			showGroupCounts: boolean;
 		}
 	): void {
-		const groupEl = this.containerEl.createDiv("enhanced-list-group");
-		const isCollapsed = this.collapsedGroups.has(groupKey);
+		const levels: Array<"primary" | "secondary" | "tertiary"> = ["primary", "secondary", "tertiary"];
+		const level = levels[levelOffset];
+
+		const groupEl = parentEl.createDiv("enhanced-list-group");
+		groupEl.setAttribute("data-level", level);
+
+		const collapseKey = nativeKey ? `${nativeKey}::${groupKey}` : groupKey;
+		const collapsedSet = (level === "secondary" || level === "tertiary") ? this.collapsedSubGroups : this.collapsedGroups;
+		const isCollapsed = collapsedSet.has(collapseKey);
 
 		// Render group header
-		this.renderGroupHeader(groupEl, groupKey, entries.length, isCollapsed, options, "primary");
+		this.renderGroupHeader(groupEl, groupKey, entries.length, isCollapsed, options, level, collapseKey);
 
 		if (isCollapsed) {
 			groupEl.addClass("is-collapsed");
@@ -479,29 +580,27 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 		title: string,
 		count: number,
 		isCollapsed: boolean,
-		options: { collapsibleGroups: boolean; showGroupCounts: boolean },
-		level: "primary" | "secondary",
+		options: { showGroupCounts: boolean },
+		level: "primary" | "secondary" | "tertiary",
 		compoundKey?: string
 	): void {
 		const headerEl = groupEl.createDiv("enhanced-list-group-header");
 
-		if (level === "secondary") {
+		if (level === "secondary" || level === "tertiary") {
 			headerEl.addClass("is-sub-group");
 		}
 
 		// Collapse indicator
-		if (options.collapsibleGroups) {
-			const collapseIcon = headerEl.createSpan("enhanced-list-collapse-icon");
-			collapseIcon.innerHTML = isCollapsed
-				? '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>'
-				: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
-			headerEl.addClass("is-collapsible");
-		}
+		const collapseIcon = headerEl.createSpan("enhanced-list-collapse-icon");
+		collapseIcon.innerHTML = isCollapsed
+			? '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>'
+			: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>';
+		headerEl.addClass("is-collapsible");
 
 		// Group title
 		headerEl.createSpan({
 			cls: "enhanced-list-group-title",
-			text: title,
+			text: this.stripWikilinks(title),
 		});
 
 		// Group count
@@ -513,65 +612,17 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 		}
 
 		// Click handler for collapse
-		if (options.collapsibleGroups) {
-			const groupKey = compoundKey || title;
-			const collapsedSet = level === "secondary" ? this.collapsedSubGroups : this.collapsedGroups;
+		const groupKey = compoundKey || title;
+		const collapsedSet = (level === "secondary" || level === "tertiary") ? this.collapsedSubGroups : this.collapsedGroups;
 
-			headerEl.addEventListener("click", () => {
-				if (isCollapsed) {
-					collapsedSet.delete(groupKey);
-				} else {
-					collapsedSet.add(groupKey);
-				}
-				this.onDataUpdated();
-			});
-		}
-	}
-
-	/**
-	 * Render a group of entries with header (for native Bases grouping)
-	 */
-	private renderGroup(
-		group: BasesEntryGroup,
-		options: {
-			order: BasesPropertyId[];
-			previewLines: number;
-			showThumbnails: boolean;
-			showTags: boolean;
-			showSubtitle: boolean;
-			subtitleProperty: string;
-			showMetadata: boolean;
-			collapsibleGroups: boolean;
-			showGroupCounts: boolean;
-		}
-	): void {
-		const groupEl = this.containerEl.createDiv("enhanced-list-group");
-		const groupKey = group.hasKey() ? (group.key?.toString() ?? "__ungrouped__") : "__ungrouped__";
-		const isCollapsed = this.collapsedGroups.has(groupKey);
-
-		// Render group header if there's a group key
-		if (group.hasKey()) {
-			this.renderGroupHeader(
-				groupEl,
-				group.key?.toString() ?? "",
-				group.entries.length,
-				isCollapsed,
-				options,
-				"primary"
-			);
-		}
-
-		// Don't render entries if collapsed
-		if (isCollapsed && group.hasKey()) {
-			groupEl.addClass("is-collapsed");
-			return;
-		}
-
-		// Render entries
-		const entriesEl = groupEl.createDiv("enhanced-list-entries");
-		for (const entry of group.entries) {
-			this.renderEntry(entriesEl, entry, options);
-		}
+		headerEl.addEventListener("click", () => {
+			if (isCollapsed) {
+				collapsedSet.delete(groupKey);
+			} else {
+				collapsedSet.add(groupKey);
+			}
+			this.onDataUpdated();
+		});
 	}
 
 	/**
@@ -583,6 +634,7 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 		options: {
 			order: BasesPropertyId[];
 			previewLines: number;
+			previewProperty: string | null;
 			showThumbnails: boolean;
 			showTags: boolean;
 			showSubtitle: boolean;
@@ -596,8 +648,8 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 
 		// Make entire item clickable
 		itemEl.addEventListener("click", (evt) => {
-			// Don't trigger if clicking on a tag
-			if ((evt.target as HTMLElement).closest(".enhanced-list-tag")) return;
+			// Don't trigger if clicking on a tag or wikilink
+			if ((evt.target as HTMLElement).closest(".enhanced-list-tag, .enhanced-list-link")) return;
 
 			if (evt.button !== 0 && evt.button !== 1) return;
 			evt.preventDefault();
@@ -661,7 +713,7 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 
 		// Preview text
 		if (options.previewLines > 0) {
-			const preview = this.getPreview(entry, options.previewLines);
+			const preview = this.getPreview(entry, options.previewLines, options.previewProperty);
 			if (preview) {
 				contentEl.createDiv({
 					cls: "enhanced-list-preview",
@@ -704,14 +756,8 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 			if (!valueStr || valueStr === "null" || valueStr === "undefined") continue;
 
 			const propEl = propsEl.createSpan("enhanced-list-property");
-			propEl.createSpan({
-				cls: "enhanced-list-property-label",
-				text: name,
-			});
-			propEl.createSpan({
-				cls: "enhanced-list-property-value",
-				text: valueStr,
-			});
+			const valueSpan = propEl.createSpan("enhanced-list-property-value");
+			this.renderTextWithLinks(valueSpan, valueStr);
 		}
 
 		// Metadata footer
@@ -789,10 +835,39 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 	/**
 	 * Get preview text for entry
 	 */
-	private getPreview(entry: BasesEntry, lines: number): string | null {
-		const cache = this.app.metadataCache.getFileCache(entry.file);
+	private getPreview(entry: BasesEntry, lines: number, previewProperty: string | null): string | null {
+		// If a specific preview property is configured, use it
+		if (previewProperty) {
+			// Try Bases getValue first
+			try {
+				const value = entry.getValue(previewProperty as BasesPropertyId);
+				if (value) {
+					const valueStr = value.toString();
+					if (valueStr && valueStr !== "null" && valueStr !== "undefined") {
+						return this.truncateToLines(this.stripWikilinks(valueStr), lines);
+					}
+				}
+			} catch {
+				// Property might not be a valid BasesPropertyId
+			}
 
-		// Try frontmatter description/summary first
+			// Fallback for note properties: try frontmatter directly
+			if (previewProperty.startsWith("note.")) {
+				const propName = previewProperty.slice(5);
+				const cache = this.app.metadataCache.getFileCache(entry.file);
+				if (cache?.frontmatter && propName in cache.frontmatter) {
+					const value = cache.frontmatter[propName];
+					if (value !== null && value !== undefined) {
+						return this.truncateToLines(this.stripWikilinks(String(value)), lines);
+					}
+				}
+			}
+
+			return null;
+		}
+
+		// Default behavior: try common frontmatter description fields
+		const cache = this.app.metadataCache.getFileCache(entry.file);
 		if (cache?.frontmatter) {
 			const descFields = ["description", "summary", "excerpt", "abstract"];
 			for (const field of descFields) {
@@ -802,8 +877,6 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 			}
 		}
 
-		// Get content after frontmatter
-		// Note: For POC we'll just show a placeholder - full implementation would read file
 		return null;
 	}
 
@@ -867,7 +940,7 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 			if (value) {
 				const valueStr = value.toString();
 				if (valueStr && valueStr !== "null" && valueStr !== "undefined") {
-					return valueStr;
+					return this.stripWikilinks(valueStr);
 				}
 			}
 		} catch {
@@ -881,7 +954,7 @@ class EnhancedListBasesView extends BasesView implements HoverParent {
 			if (cache?.frontmatter && propName in cache.frontmatter) {
 				const value = cache.frontmatter[propName];
 				if (value !== null && value !== undefined) {
-					return String(value);
+					return this.stripWikilinks(String(value));
 				}
 			}
 		}

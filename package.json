@@ -4,8 +4,8 @@
 	"description": "A mobile-optimized list view for Bases with thumbnails, previews, tags, and grouping support.",
 	"main": "main.js",
 	"scripts": {
-		"dev": "node esbuild.config.mjs",
-		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"dev": "node --env-file=.env esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node --env-file=.env esbuild.config.mjs production",
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
 	"keywords": [],

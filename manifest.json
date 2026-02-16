@@ -1,7 +1,7 @@
 {
 	"id": "enhanced-list-view",
 	"name": "Enhanced List View",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"minAppVersion": "1.8.0",
 	"description": "A mobile-optimized list view for Bases with thumbnails, previews, tags, and grouping support.",
 	"author": "ajgxyz",

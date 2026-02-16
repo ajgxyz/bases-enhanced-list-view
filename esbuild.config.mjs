@@ -1,5 +1,6 @@
 import esbuild from "esbuild";
 import process from "process";
+import { copyFileSync } from "fs";
 import builtins from "builtin-modules";
 
 const banner = `/*
@@ -9,6 +10,23 @@ if you want to view the source, please visit the github repository of this plugi
 `;
 
 const prod = process.argv[2] === "production";
+
+const pluginDir = process.env.OBSIDIAN_PLUGIN_DIR || ".";
+
+const copyAssets = () => {
+	copyFileSync("manifest.json", `${pluginDir}/manifest.json`);
+	copyFileSync("styles.css", `${pluginDir}/styles.css`);
+};
+
+const copyPlugin = {
+	name: "copy-plugin",
+	setup(build) {
+		build.onEnd(() => {
+			copyAssets();
+			console.log("Copied manifest.json and styles.css to plugin dir");
+		});
+	},
+};
 
 const context = await esbuild.context({
 	banner: {
@@ -37,8 +55,9 @@ const context = await esbuild.context({
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
-	outfile: "main.js",
+	outfile: `${pluginDir}/main.js`,
 	minify: prod,
+	plugins: [copyPlugin],
 });
 
 if (prod) {
